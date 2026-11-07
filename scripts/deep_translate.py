@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Deep Viet Hoa APK + Anti-Crash Guard (Bản tối ưu chống lỗi Too Many Requests)
+"""
 
 import os
 import re
 import sys
 import glob
+import time
 import argparse
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -104,36 +108,72 @@ def translate_single(text, force_cjk_only=False):
             return text.replace(clean_text, cached)
         return text
 
-    try:
-        translator = GoogleTranslator(source='auto', target='vi')
-        protected, phs = protect_placeholders(clean_text)
-        translated = translator.translate(protected)
-        if translated:
-            restored = restore_placeholders(translated, phs)
-            if validate_format_specifiers(clean_text, restored):
-                TRANSLATION_CACHE[clean_text] = restored
-                return restored
-            else:
-                TRANSLATION_CACHE[clean_text] = clean_text
-                return text
-    except Exception as e:
-        print(f"Lỗi dịch '{clean_text}': {e}")
+    for attempt in range(3):
+        try:
+            translator = GoogleTranslator(source='auto', target='vi')
+            protected, phs = protect_placeholders(clean_text)
+            translated = translator.translate(protected)
+            if translated:
+                restored = restore_placeholders(translated, phs)
+                if validate_format_specifiers(clean_text, restored):
+                    TRANSLATION_CACHE[clean_text] = restored
+                    time.sleep(0.3)
+                    return restored
+                else:
+                    TRANSLATION_CACHE[clean_text] = clean_text
+                    return text
+        except Exception:
+            time.sleep(1.5 * (attempt + 1))
+            
     return text
 
 def batch_warm_cache(unique_strings):
+    """Dịch theo lô an toàn tuyệt đối, tránh lỗi quá tải request của Google"""
     to_translate = [s for s in unique_strings if s not in TRANSLATION_CACHE and not should_skip_string(s)]
     if not to_translate:
         return
-    print(f"Đang dịch đa luồng {len(to_translate)} chuỗi mới...")
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        list(executor.map(translate_single, to_translate))
+        
+    print(f"Đang dịch lô {len(to_translate)} chuỗi theo cơ chế an toàn chống Rate Limit...")
+    translator = GoogleTranslator(source='auto', target='vi')
+    
+    batch_size = 30
+    for i in range(0, len(to_translate), batch_size):
+        chunk = to_translate[i:i + batch_size]
+        for text in chunk:
+            clean_text = text.strip()
+            if clean_text in TRANSLATION_CACHE:
+                continue
+                
+            success = False
+            for attempt in range(3):
+                try:
+                    protected, phs = protect_placeholders(clean_text)
+                    translated = translator.translate(protected)
+                    if translated:
+                        restored = restore_placeholders(translated, phs)
+                        if validate_format_specifiers(clean_text, restored):
+                            TRANSLATION_CACHE[clean_text] = restored
+                        else:
+                            TRANSLATION_CACHE[clean_text] = clean_text
+                        success = True
+                        break
+                except Exception:
+                    time.sleep(2.0 * (attempt + 1))
+            
+            if not success:
+                TRANSLATION_CACHE[clean_text] = clean_text
+                
+            time.sleep(0.4)
+            
+        print(f"Đã xử lý xong {min(i + batch_size, len(to_translate))}/{len(to_translate)} chuỗi...")
+        time.sleep(1.0)
 
 def fix_manifest_anti_crash(decompiled_dir, strip_shared_uid=False):
     manifest_path = os.path.join(decompiled_dir, "AndroidManifest.xml")
     if not os.path.exists(manifest_path):
         return
 
-    print("Đang tối ưu hóa AndroidManifest.xml...")
+    print("Đang tối ưu hóa AndroidManifest.xml chống văng...")
     with open(manifest_path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
 
