@@ -1,0 +1,106 @@
+name: Deep Viet Hoa & Anti-Crash APK
+
+on:
+  push:
+    paths:
+      - 'input/*.apk'
+  workflow_dispatch:
+    inputs:
+      apk_name:
+        description: 'Tên file APK trong thư mục input (để trống sẽ tự lấy file đầu tiên)'
+        required: false
+        default: ''
+      strip_shared_uid:
+        description: 'Gỡ sharedUserId (Bật nếu là app hệ thống xe hơi bị lỗi cài đặt/văng)'
+        required: false
+        default: false
+        type: boolean
+      skip_smali:
+        description: 'Chỉ dịch XML, bỏ qua Smali (Bật nếu app bảo mật gắt)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  deep-viethoa:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: 2. Cài đặt Java 17 & Android Build Tools (zipalign)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Cài đặt thư viện dịch thuật Python & zipalign
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y zipalign
+          pip install deep-translator
+
+      - name: 4. Tải Apktool 2.9.3 và Uber-APK-Signer
+        run: |
+          wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -O /usr/local/bin/apktool
+          wget -q https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar -O /usr/local/bin/apktool.jar
+          chmod +x /usr/local/bin/apktool /usr/local/bin/apktool.jar
+          wget -q https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -O uber-apk-signer.jar
+
+      - name: 5. Unpack, Dịch Sâu, Chống Văng, Căn Chỉnh 4KB & Ký APK
+        run: |
+          mkdir -p output
+          
+          if [ -n "${{ github.event.inputs.apk_name }}" ]; then
+            APK_FILE="input/${{ github.event.inputs.apk_name }}"
+          else
+            APK_FILE=$(ls input/*.apk | head -n 1)
+          fi
+
+          if [ ! -f "$APK_FILE" ]; then
+            echo "Không tìm thấy file APK nào trong thư mục input/!"
+            exit 1
+          fi
+
+          BASE_NAME=$(basename "$APK_FILE" .apk)
+          echo "=== Bắt đầu xử lý chuyên sâu: $APK_FILE ==="
+
+          # 1. Giải nén APK bằng Apktool
+          java -Xmx4G -jar /usr/local/bin/apktool.jar d "$APK_FILE" -o decompiled_apk -f
+
+          # 2. Chạy script Việt hóa sâu + Anti-Crash Guard
+          EXTRA_ARGS=""
+          if [ "${{ github.event.inputs.strip_shared_uid }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --strip-shared-uid"
+          fi
+          if [ "${{ github.event.inputs.skip_smali }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --skip-smali"
+          fi
+
+          python3 scripts/deep_translate.py --dir decompiled_apk $EXTRA_ARGS
+
+          # 3. Đóng gói lại với aapt2
+          java -Xmx4G -jar /usr/local/bin/apktool.jar b decompiled_apk --use-aapt2 -o "raw_${BASE_NAME}.apk" || \
+          java -Xmx4G -jar /usr/local/bin/apktool.jar b decompiled_apk -o "raw_${BASE_NAME}.apk"
+
+          # 4. LỚP CHỐNG VĂNG 5: Căn chỉnh bộ nhớ trang 4KB (Page-align .so files) bằng zipalign -p 4
+          zipalign -p -f -v 4 "raw_${BASE_NAME}.apk" "unsigned_${BASE_NAME}.apk"
+
+          # 5. Ký chứng chỉ v1 + v2 + v3 bằng Uber-APK-Signer
+          java -jar uber-apk-signer.jar --apks "unsigned_${BASE_NAME}.apk" --skipZipAlign --out output/
+          
+          mv "output/unsigned_${BASE_NAME}-debugSigned.apk" "output/${BASE_NAME}_DeepVietHoa.apk" || \
+          mv "output/unsigned_${BASE_NAME}-aligned-debugSigned.apk" "output/${BASE_NAME}_DeepVietHoa.apk"
+
+      - name: 6. Đẩy APK thành phẩm lên nhánh chính của Repo
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/*.apk
+          git commit -m "Hoàn tất Việt hóa sâu & chống văng APK: $(date +'%Y-%m-%d %H:%M')" || echo "Không có thay đổi"
+          git pull --rebase origin main || true
+          git push
