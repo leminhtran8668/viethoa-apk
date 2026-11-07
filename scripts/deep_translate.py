@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Deep Viet Hoa APK + Anti-Crash — CI-safe: CJK-only, timeout, max strings."""
+"""
+Deep Viet Hoa APK + Anti-Crash
+Dùng Google GTX (translate.googleapis.com) — ổn định hơn deep-translator trên CI.
+Offline glossary ưu tiên; circuit-breaker khi bị rate-limit.
+"""
 
-import os, re, sys, glob, time, argparse
+import os, re, sys, glob, time, argparse, json, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 
-try:
-    from deep_translator import GoogleTranslator
-except ImportError:
-    GoogleTranslator = None
-
 MAX_TRANSLATE_SECONDS = 25 * 60
-MAX_STRINGS = 2500
-SLEEP_OK = 0.15
-SLEEP_ERR = 1.2
-BATCH_PRINT_EVERY = 50
+MAX_STRINGS = 3000
+SLEEP_OK = 0.25
+SLEEP_ERR = 2.0
+BATCH_PRINT_EVERY = 40
+MAX_CONSECUTIVE_FAILS = 8
 
 CUSTOM_GLOSSARY = {
     "确定": "Xác nhận", "取消": "Hủy", "设置": "Cài đặt", "系统设置": "Cài đặt hệ thống",
@@ -27,17 +27,38 @@ CUSTOM_GLOSSARY = {
     "开启": "Bật", "关闭": "Tắt", "已开启": "Đã bật", "已关闭": "Đã tắt",
     "主页": "Trang chủ", "返回": "Quay lại", "刷新": "Làm mới", "删除": "Xóa",
     "清空": "Xóa sạch", "版本": "Phiên bản", "权限": "Quyền truy cập",
-    "开始": "Bắt đầu", "结束": "Kết thúc", "下一步": "Tiếp theo", "完成": "Hoàn tất",
-    "搜索": "Tìm kiếm", "帮助": "Trợ giúp", "关于": "Giới thiệu", "导航": "Điều hướng",
-    "地图": "Bản đồ", "音乐": "Nhạc", "视频": "Video", "电话": "Điện thoại",
-    "应用": "Ứng dụng", "连接": "Kết nối", "温度": "Nhiệt độ", "空调": "Điều hòa",
-    "座椅": "Ghế", "胎压": "Áp suất lốp", "续航": "Quãng đường", "电量": "Pin", "充电": "Sạc",
+    "开始": "Bắt đầu", "结束": "Kết thúc", "下一步": "Tiếp theo", "上一步": "Quay lại",
+    "完成": "Hoàn tất", "搜索": "Tìm kiếm", "帮助": "Trợ giúp", "关于": "Giới thiệu",
+    "语言": "Ngôn ngữ", "中文": "Tiếng Trung", "英文": "Tiếng Anh",
+    "导航": "Điều hướng", "地图": "Bản đồ", "音乐": "Nhạc", "视频": "Video",
+    "电话": "Điện thoại", "信息": "Tin nhắn", "应用": "Ứng dụng", "文件": "Tệp",
+    "下载": "Tải xuống", "上传": "Tải lên", "连接": "Kết nối", "断开": "Ngắt",
+    "温度": "Nhiệt độ", "空调": "Điều hòa", "座椅": "Ghế", "方向盘": "Vô lăng",
+    "胎压": "Áp suất lốp", "续航": "Quãng đường", "电量": "Pin", "充电": "Sạc",
+    "登录": "Đăng nhập", "注册": "Đăng ký", "用户": "Người dùng", "账户": "Tài khoản",
+    "网络": "Mạng", "无线": "Không dây", "热点": "Điểm phát sóng", "亮度": "Độ sáng",
+    "显示": "Hiển thị", "声音": "Âm thanh", "壁纸": "Hình nền", "主题": "Chủ đề",
+    "更新": "Cập nhật", "安装": "Cài đặt", "卸载": "Gỡ cài đặt", "打开": "Mở",
+    "选择": "Chọn", "全部": "Tất cả", "其他": "Khác", "默认": "Mặc định",
+    "自动": "Tự động", "手动": "Thủ công", "是": "Có", "否": "Không",
+    "知道了": "Đã hiểu", "重试": "Thử lại", "跳过": "Bỏ qua", "继续": "Tiếp tục",
+    "暂停": "Tạm dừng", "播放": "Phát", "上一首": "Bài trước", "下一首": "Bài sau",
+    "播放列表": "Danh sách phát", "收藏": "Yêu thích", "历史": "Lịch sử",
+    "消息": "Tin nhắn", "通知": "Thông báo", "相册": "Album", "照片": "Ảnh",
+    "录制": "Ghi", "回放": "Phát lại", "锁定": "Khóa", "解锁": "Mở khóa",
+    "车速": "Tốc độ", "里程": "Số km", "油耗": "Tiêu hao", "能耗": "Tiêu thụ điện",
+    "驾驶": "Lái xe", "泊车": "Đỗ xe", "倒车": "Lùi xe", "雷达": "Radar",
+    "氛围灯": "Đèn viền", "车窗": "Cửa sổ", "天窗": "Cửa sổ trời", "雨刷": "Gạt mưa",
+    "大灯": "Đèn pha", "雾灯": "Đèn sương mù", "双闪": "Đèn khẩn cấp",
+    "安全": "An toàn", "隐私": "Quyền riêng tư", "服务": "Dịch vụ", "反馈": "Phản hồi",
 }
 
 TRANSLATION_CACHE = dict(CUSTOM_GLOSSARY)
 _START_TS = time.time()
 _API_COUNT = 0
+_CONSEC_FAILS = 0
 _STOP = False
+_API_DISABLED = False
 
 CJK_REGEX = re.compile(r'[\u4e00-\u9fff]')
 PLACEHOLDER_REGEX = re.compile(r'(%(\d+\$)?[-#+ 0,(]*\d*\.?\d*[sdfoxegcbh]|\{\d+\}|\\n|\\t)')
@@ -78,8 +99,31 @@ def should_skip_string(text):
         return True
     return False
 
+def gtx_translate(text, sl='zh-CN', tl='vi'):
+    """Unofficial Google Translate endpoint — works better on CI than deep-translator."""
+    q = urllib.parse.urlencode({
+        'client': 'gtx',
+        'sl': sl,
+        'tl': tl,
+        'dt': 't',
+        'q': text,
+    })
+    url = 'https://translate.googleapis.com/translate_a/single?' + q
+    req = urllib.request.Request(url, headers={
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+        'Accept': '*/*',
+    })
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    parts = []
+    if data and data[0]:
+        for seg in data[0]:
+            if seg and seg[0]:
+                parts.append(seg[0])
+    return ''.join(parts).strip()
+
 def translate_single(text, force_cjk_only=True):
-    global _API_COUNT, _STOP
+    global _API_COUNT, _STOP, _CONSEC_FAILS, _API_DISABLED
     if _STOP or timed_out():
         _STOP = True
         return text
@@ -87,43 +131,52 @@ def translate_single(text, force_cjk_only=True):
         return text
     if force_cjk_only and not has_chinese(text):
         return text
+
     clean_text = text.strip()
     if clean_text in TRANSLATION_CACHE:
         cached = TRANSLATION_CACHE[clean_text]
         if validate_format_specifiers(clean_text, cached):
             return text.replace(clean_text, cached) if clean_text != text else cached
         return text
-    if _API_COUNT >= MAX_STRINGS:
-        _STOP = True
-        print(f"[!] MAX_STRINGS={MAX_STRINGS} reached, stop API.")
+
+    if _API_DISABLED or _API_COUNT >= MAX_STRINGS:
         TRANSLATION_CACHE[clean_text] = clean_text
         return text
-    if GoogleTranslator is None:
+
+    protected, phs = protect_placeholders(clean_text)
+    # GTX limit ~ short strings; split if needed
+    if len(protected) > 450:
         TRANSLATION_CACHE[clean_text] = clean_text
         return text
-    for attempt in range(2):
+
+    for attempt in range(3):
         if timed_out():
             _STOP = True
             return text
         try:
-            translator = GoogleTranslator(source='zh-CN', target='vi')
-            protected, phs = protect_placeholders(clean_text)
-            translated = translator.translate(protected)
+            translated = gtx_translate(protected)
             _API_COUNT += 1
+            _CONSEC_FAILS = 0
             if translated:
                 restored = restore_placeholders(translated, phs)
                 if validate_format_specifiers(clean_text, restored):
                     TRANSLATION_CACHE[clean_text] = restored
                     time.sleep(SLEEP_OK)
                     if _API_COUNT % BATCH_PRINT_EVERY == 0:
-                        print(f"  ... API {_API_COUNT}, cache={len(TRANSLATION_CACHE)}")
+                        print(f"  ... API {_API_COUNT}, cache={len(TRANSLATION_CACHE)}, fails={_CONSEC_FAILS}")
                     return restored
                 TRANSLATION_CACHE[clean_text] = clean_text
                 return text
         except Exception as e:
+            _CONSEC_FAILS += 1
+            msg = str(e)[:100]
+            print(f"  [api-fail #{_CONSEC_FAILS}] {msg}")
             time.sleep(SLEEP_ERR * (attempt + 1))
-            if attempt == 1:
-                print(f"  [skip] API: {str(e)[:80]}")
+            if _CONSEC_FAILS >= MAX_CONSECUTIVE_FAILS:
+                _API_DISABLED = True
+                print(f"[!] Tắt API sau {_CONSEC_FAILS} lỗi liên tiếp — chỉ dùng glossary/cache.")
+                break
+
     TRANSLATION_CACHE[clean_text] = clean_text
     return text
 
@@ -133,10 +186,10 @@ def batch_warm_cache(unique_strings):
                     if s not in TRANSLATION_CACHE and not should_skip_string(s) and has_chinese(s)]
     if not to_translate:
         return
-    print(f"Dịch {len(to_translate)} chuỗi CJK (max {MAX_STRINGS}, timeout {MAX_TRANSLATE_SECONDS}s)...")
+    print(f"Dịch {len(to_translate)} chuỗi CJK (max={MAX_STRINGS}, timeout={MAX_TRANSLATE_SECONDS}s, gtx)...")
     for i, text in enumerate(to_translate):
-        if _STOP or timed_out():
-            print(f"[!] Dừng warm-cache {i}/{len(to_translate)}")
+        if _STOP or timed_out() or _API_DISABLED:
+            print(f"[!] Dừng warm-cache tại {i}/{len(to_translate)}")
             break
         translate_single(text, force_cjk_only=True)
         if (i + 1) % BATCH_PRINT_EVERY == 0:
@@ -216,7 +269,7 @@ def process_layout_files(base_res_dir):
         if cjk:
             unique.update(cjk)
             matched.append(fpath)
-    print(f"Layout: {len(matched)} files, {len(unique)} CJK strings")
+    print(f"Layout: {len(matched)} files, {len(unique)} CJK")
     batch_warm_cache(unique)
     for fpath in matched:
         if _STOP or timed_out():
@@ -255,14 +308,13 @@ def process_smali_files(decompiled_dir):
     smali_dirs = glob.glob(os.path.join(decompiled_dir, "smali*"))
     if not smali_dirs:
         return
-    print("Quét smali (giới hạn)...")
-    unique, targets, n = set(), [], 0
+    print("Quét smali...")
+    unique, targets = set(), []
     for sd in smali_dirs:
         for root, _, files in os.walk(sd):
             for name in files:
                 if not name.endswith('.smali'):
                     continue
-                n += 1
                 sf = os.path.join(root, name)
                 try:
                     with open(sf, 'r', encoding='utf-8', errors='ignore') as f:
@@ -291,7 +343,7 @@ def process_smali_files(decompiled_dir):
     print(f"Smali: {len(targets)} files, {len(unique)} candidates")
     batch_warm_cache(unique)
     for sf in targets:
-        if _STOP or timed_out():
+        if _STOP or timed_out() or _API_DISABLED:
             break
         with open(sf, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
@@ -314,7 +366,7 @@ if __name__ == "__main__":
     parser.add_argument("--dir", default="decompiled_apk")
     parser.add_argument("--strip-shared-uid", action="store_true")
     parser.add_argument("--skip-smali", action="store_true")
-    parser.add_argument("--max-strings", type=int, default=2500)
+    parser.add_argument("--max-strings", type=int, default=3000)
     parser.add_argument("--timeout-min", type=int, default=25)
     args = parser.parse_args()
 
@@ -323,11 +375,22 @@ if __name__ == "__main__":
     g["MAX_TRANSLATE_SECONDS"] = args.timeout_min * 60
     g["_START_TS"] = time.time()
     g["_API_COUNT"] = 0
+    g["_CONSEC_FAILS"] = 0
     g["_STOP"] = False
+    g["_API_DISABLED"] = False
 
     ddir = args.dir
     base_res = os.path.join(ddir, "res")
-    print(f"=== Deep Viet Hoa | max={MAX_STRINGS} timeout={args.timeout_min}m skip_smali={args.skip_smali} ===")
+    print(f"=== Deep Viet Hoa GTX | max={args.max_strings} timeout={args.timeout_min}m skip_smali={args.skip_smali} ===")
+    # smoke test API
+    try:
+        t = gtx_translate("设置")
+        print(f"API smoke OK: 设置 -> {t}")
+    except Exception as e:
+        print(f"API smoke FAIL: {e}")
+        print("Sẽ chỉ dùng glossary offline.")
+        g["_API_DISABLED"] = True
+
     fix_manifest_anti_crash(ddir, strip_shared_uid=args.strip_shared_uid)
     fix_apktool_yml(ddir)
 
@@ -352,4 +415,4 @@ if __name__ == "__main__":
     else:
         print("Skip smali.")
 
-    print(f"=== DONE | API={_API_COUNT} cache={len(TRANSLATION_CACHE)} t={int(time.time()-_START_TS)}s stop={_STOP} ===")
+    print(f"=== DONE | API={_API_COUNT} cache={len(TRANSLATION_CACHE)} t={int(time.time()-_START_TS)}s stop={_STOP} api_off={_API_DISABLED} ===")

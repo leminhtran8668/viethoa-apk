@@ -43,7 +43,8 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y zipalign
-          pip install 'deep-translator>=1.11.4'
+          pip install --upgrade pip >/dev/null 2>&1 || true
+          # Dùng Google GTX qua urllib — không cần deep-translator
 
       - name: 4. Tải Apktool và Uber-APK-Signer
         run: |
