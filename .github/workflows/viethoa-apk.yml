@@ -7,18 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       apk_name:
-        description: 'Tên file APK trong thư mục input (để trống sẽ tự lấy file đầu tiên)'
+        description: 'Tên file APK trong thư mục input (để trống = file đầu tiên)'
         required: false
         default: ''
       strip_shared_uid:
-        description: 'Gỡ sharedUserId (Bật nếu là app hệ thống xe hơi bị lỗi cài đặt/văng)'
+        description: 'Gỡ sharedUserId (app hệ thống xe hay lỗi cài)'
         required: false
         default: false
         type: boolean
       skip_smali:
-        description: 'Chỉ dịch XML, bỏ qua Smali (Bật nếu app bảo mật gắt)'
+        description: 'Chỉ dịch XML, bỏ smali (KHUYẾN NGHỊ bật để tránh treo)'
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -27,6 +27,7 @@ permissions:
 jobs:
   deep-viethoa:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: 1. Checkout Repo
@@ -38,67 +39,68 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 3. Cài đặt thư viện dịch thuật Python & zipalign
+      - name: 3. Cài đặt Python dịch thuật & zipalign
         run: |
           sudo apt-get update -y
           sudo apt-get install -y zipalign
-          pip install deep-translator
+          pip install 'deep-translator>=1.11.4'
 
-      - name: 4. Tải Apktool và Uber-APK-Signer (Link GitHub Releases chính chủ)
+      - name: 4. Tải Apktool và Uber-APK-Signer
         run: |
           curl -L -s https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar -o apktool.jar
           curl -L -s https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar -o uber-apk-signer.jar
 
-      - name: 5. Unpack, Dịch Sâu, Chống Văng, Căn Chỉnh 4KB & Ký APK
+      - name: 5. Unpack, Dịch, Chống Văng, Align & Ký APK
         run: |
+          set -e
           mkdir -p output
-          
+
           if [ -n "${{ github.event.inputs.apk_name }}" ]; then
             APK_FILE="input/${{ github.event.inputs.apk_name }}"
           else
-            APK_FILE=$(ls input/*.apk | head -n 1)
+            APK_FILE=$(ls input/*.apk 2>/dev/null | head -n 1 || true)
           fi
 
-          if [ ! -f "$APK_FILE" ]; then
-            echo "Không tìm thấy file APK nào trong thư mục input/!"
+          if [ -z "$APK_FILE" ] || [ ! -f "$APK_FILE" ]; then
+            echo "Không tìm thấy file APK trong input/"
             exit 1
           fi
 
           BASE_NAME=$(basename "$APK_FILE" .apk)
-          echo "=== Bắt đầu xử lý chuyên sâu: $APK_FILE ==="
+          echo "=== Xử lý: $APK_FILE ==="
 
-          # 1. Giải nén APK bằng Apktool (lưu ngay tại thư mục hiện tại)
           java -Xmx4G -jar apktool.jar d "$APK_FILE" -o decompiled_apk -f
 
-          # 2. Chạy script Việt hóa sâu + Anti-Crash Guard
-          EXTRA_ARGS=""
+          EXTRA_ARGS="--timeout-min 25 --max-strings 2500"
+          SKIP_SMALI="${{ github.event.inputs.skip_smali }}"
+          if [ -z "$SKIP_SMALI" ] || [ "$SKIP_SMALI" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --skip-smali"
+          fi
           if [ "${{ github.event.inputs.strip_shared_uid }}" = "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --strip-shared-uid"
           fi
-          if [ "${{ github.event.inputs.skip_smali }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --skip-smali"
-          fi
 
+          echo "Args: $EXTRA_ARGS"
           python3 scripts/deep_translate.py --dir decompiled_apk $EXTRA_ARGS
 
-          # 3. Đóng gói lại với aapt2
           java -Xmx4G -jar apktool.jar b decompiled_apk --use-aapt2 -o "raw_${BASE_NAME}.apk" || \
           java -Xmx4G -jar apktool.jar b decompiled_apk -o "raw_${BASE_NAME}.apk"
 
-          # 4. Căn chỉnh bộ nhớ trang 4KB (Page-align .so files) bằng zipalign -p 4
           zipalign -p -f -v 4 "raw_${BASE_NAME}.apk" "unsigned_${BASE_NAME}.apk"
 
-          # 5. Ký chứng chỉ v1 + v2 + v3 bằng Uber-APK-Signer
           java -jar uber-apk-signer.jar --apks "unsigned_${BASE_NAME}.apk" --skipZipAlign --out output/
-          
-          mv "output/unsigned_${BASE_NAME}-debugSigned.apk" "output/${BASE_NAME}_DeepVietHoa.apk" || \
-          mv "output/unsigned_${BASE_NAME}-aligned-debugSigned.apk" "output/${BASE_NAME}_DeepVietHoa.apk"
 
-      - name: 6. Đẩy APK thành phẩm lên nhánh chính của Repo
+          mv "output/unsigned_${BASE_NAME}-debugSigned.apk" "output/${BASE_NAME}_DeepVietHoa.apk" 2>/dev/null || \
+          mv "output/unsigned_${BASE_NAME}-aligned-debugSigned.apk" "output/${BASE_NAME}_DeepVietHoa.apk" 2>/dev/null || \
+          (ls -la output/ && exit 1)
+
+          ls -lh "output/${BASE_NAME}_DeepVietHoa.apk"
+
+      - name: 6. Commit APK thành phẩm
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add output/*.apk
-          git commit -m "Hoàn tất Việt hóa sâu & chống văng APK: $(date +'%Y-%m-%d %H:%M')" || echo "Không có thay đổi"
+          git commit -m "Viet hoa APK: $(date +'%Y-%m-%d %H:%M')" || echo "Không có thay đổi"
           git pull --rebase origin main || true
           git push
