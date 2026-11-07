@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Deep Viet Hoa APK + Anti-Crash
-Dùng Google GTX (translate.googleapis.com) — ổn định hơn deep-translator trên CI.
-Offline glossary ưu tiên; circuit-breaker khi bị rate-limit.
+Deep Viet Hoa APK + Anti-Crash — OFFLINE (glossary + cache JSON).
+Nhanh, ổn định trên CI, không phụ thuộc Google API.
 """
 
-import os, re, sys, glob, time, argparse, json, urllib.parse, urllib.request
+import os, re, sys, glob, json, argparse, time
 import xml.etree.ElementTree as ET
 
-MAX_TRANSLATE_SECONDS = 25 * 60
-MAX_STRINGS = 3000
-SLEEP_OK = 0.25
-SLEEP_ERR = 2.0
-BATCH_PRINT_EVERY = 40
-MAX_CONSECUTIVE_FAILS = 8
+CACHE_PATH_DEFAULT = os.path.join(os.path.dirname(__file__), "translation_cache.json")
 
-CUSTOM_GLOSSARY = {
+# Thuật ngữ UI / ô tô thường gặp
+GLOSSARY = {
     "确定": "Xác nhận", "取消": "Hủy", "设置": "Cài đặt", "系统设置": "Cài đặt hệ thống",
     "蓝牙": "Bluetooth", "行车记录仪": "Cam hành trình", "摄像头": "Camera",
     "车门": "Cửa xe", "左前门": "Cửa trước trái", "右前门": "Cửa trước phải",
@@ -25,68 +20,111 @@ CUSTOM_GLOSSARY = {
     "提示": "Thông báo", "警告": "Cảnh báo", "成功": "Thành công", "失败": "Thất bại",
     "正在加载": "Đang tải...", "请稍候": "Vui lòng chờ...", "退出": "Thoát", "保存": "Lưu",
     "开启": "Bật", "关闭": "Tắt", "已开启": "Đã bật", "已关闭": "Đã tắt",
-    "主页": "Trang chủ", "返回": "Quay lại", "刷新": "Làm mới", "删除": "Xóa",
-    "清空": "Xóa sạch", "版本": "Phiên bản", "权限": "Quyền truy cập",
+    "打开": "Mở", "主页": "Trang chủ", "返回": "Quay lại", "刷新": "Làm mới",
+    "删除": "Xóa", "清空": "Xóa sạch", "版本": "Phiên bản", "权限": "Quyền truy cập",
     "开始": "Bắt đầu", "结束": "Kết thúc", "下一步": "Tiếp theo", "上一步": "Quay lại",
     "完成": "Hoàn tất", "搜索": "Tìm kiếm", "帮助": "Trợ giúp", "关于": "Giới thiệu",
-    "语言": "Ngôn ngữ", "中文": "Tiếng Trung", "英文": "Tiếng Anh",
+    "语言": "Ngôn ngữ", "中文": "Tiếng Trung", "英文": "Tiếng Anh", "越南语": "Tiếng Việt",
     "导航": "Điều hướng", "地图": "Bản đồ", "音乐": "Nhạc", "视频": "Video",
     "电话": "Điện thoại", "信息": "Tin nhắn", "应用": "Ứng dụng", "文件": "Tệp",
-    "下载": "Tải xuống", "上传": "Tải lên", "连接": "Kết nối", "断开": "Ngắt",
+    "下载": "Tải xuống", "上传": "Tải lên", "连接": "Kết nối", "断开": "Ngắt kết nối",
     "温度": "Nhiệt độ", "空调": "Điều hòa", "座椅": "Ghế", "方向盘": "Vô lăng",
     "胎压": "Áp suất lốp", "续航": "Quãng đường", "电量": "Pin", "充电": "Sạc",
     "登录": "Đăng nhập", "注册": "Đăng ký", "用户": "Người dùng", "账户": "Tài khoản",
     "网络": "Mạng", "无线": "Không dây", "热点": "Điểm phát sóng", "亮度": "Độ sáng",
     "显示": "Hiển thị", "声音": "Âm thanh", "壁纸": "Hình nền", "主题": "Chủ đề",
-    "更新": "Cập nhật", "安装": "Cài đặt", "卸载": "Gỡ cài đặt", "打开": "Mở",
-    "选择": "Chọn", "全部": "Tất cả", "其他": "Khác", "默认": "Mặc định",
-    "自动": "Tự động", "手动": "Thủ công", "是": "Có", "否": "Không",
-    "知道了": "Đã hiểu", "重试": "Thử lại", "跳过": "Bỏ qua", "继续": "Tiếp tục",
-    "暂停": "Tạm dừng", "播放": "Phát", "上一首": "Bài trước", "下一首": "Bài sau",
-    "播放列表": "Danh sách phát", "收藏": "Yêu thích", "历史": "Lịch sử",
-    "消息": "Tin nhắn", "通知": "Thông báo", "相册": "Album", "照片": "Ảnh",
-    "录制": "Ghi", "回放": "Phát lại", "锁定": "Khóa", "解锁": "Mở khóa",
-    "车速": "Tốc độ", "里程": "Số km", "油耗": "Tiêu hao", "能耗": "Tiêu thụ điện",
-    "驾驶": "Lái xe", "泊车": "Đỗ xe", "倒车": "Lùi xe", "雷达": "Radar",
-    "氛围灯": "Đèn viền", "车窗": "Cửa sổ", "天窗": "Cửa sổ trời", "雨刷": "Gạt mưa",
-    "大灯": "Đèn pha", "雾灯": "Đèn sương mù", "双闪": "Đèn khẩn cấp",
-    "安全": "An toàn", "隐私": "Quyền riêng tư", "服务": "Dịch vụ", "反馈": "Phản hồi",
+    "更新": "Cập nhật", "安装": "Cài đặt", "卸载": "Gỡ cài đặt", "选择": "Chọn",
+    "全部": "Tất cả", "其他": "Khác", "默认": "Mặc định", "自动": "Tự động",
+    "手动": "Thủ công", "是": "Có", "否": "Không", "知道了": "Đã hiểu",
+    "重试": "Thử lại", "跳过": "Bỏ qua", "继续": "Tiếp tục", "暂停": "Tạm dừng",
+    "播放": "Phát", "上一首": "Bài trước", "下一首": "Bài sau", "播放列表": "Danh sách phát",
+    "收藏": "Yêu thích", "历史": "Lịch sử", "消息": "Tin nhắn", "通知": "Thông báo",
+    "相册": "Album", "照片": "Ảnh", "录制": "Ghi", "回放": "Phát lại",
+    "锁定": "Khóa", "解锁": "Mở khóa", "车速": "Tốc độ", "里程": "Số km",
+    "油耗": "Tiêu hao", "能耗": "Tiêu thụ điện", "驾驶": "Lái xe", "泊车": "Đỗ xe",
+    "倒车": "Lùi xe", "雷达": "Radar", "氛围灯": "Đèn viền", "车窗": "Cửa sổ",
+    "天窗": "Cửa sổ trời", "雨刷": "Gạt mưa", "大灯": "Đèn pha", "雾灯": "Đèn sương mù",
+    "双闪": "Đèn khẩn cấp", "安全": "An toàn", "隐私": "Quyền riêng tư",
+    "服务": "Dịch vụ", "反馈": "Phản hồi", "加载中": "Đang tải", "请输入": "Vui lòng nhập",
+    "姓名": "Họ tên", "时间": "Thời gian", "日期": "Ngày", "小时": "Giờ", "分钟": "Phút",
+    "秒": "Giây", "年": "Năm", "月": "Tháng", "日": "Ngày", "周": "Tuần",
+    "今天": "Hôm nay", "昨天": "Hôm qua", "明天": "Ngày mai", "上午": "Sáng",
+    "下午": "Chiều", "晚上": "Tối", "更多": "Thêm", "详情": "Chi tiết",
+    "列表": "Danh sách", "添加": "Thêm", "编辑": "Sửa", "修改": "Chỉnh sửa",
+    "提交": "Gửi", "发送": "Gửi", "接收": "Nhận", "复制": "Sao chép",
+    "粘贴": "Dán", "剪切": "Cắt", "分享": "Chia sẻ", "推荐": "Đề xuất",
+    "热门": "Phổ biến", "最新": "Mới nhất", "全部应用": "Tất cả ứng dụng",
+    "系统": "Hệ thống", "车辆": "Xe", "驾驶模式": "Chế độ lái",
+    "经济": "Tiết kiệm", "舒适": "Thoải mái", "运动": "Thể thao",
+    "标准": "Tiêu chuẩn", "雪地": "Tuyết", "沙地": "Cát", "泥地": "Bùn",
+    "电池": "Pin", "电机": "Động cơ điện", "功率": "Công suất",
+    "电压": "Điện áp", "电流": "Dòng điện", "剩余": "Còn lại",
+    "总里程": "Tổng quãng đường", "平均": "Trung bình", "最大": "Tối đa",
+    "最小": "Tối thiểu", "当前": "Hiện tại", "状态": "Trạng thái",
+    "正常": "Bình thường", "异常": "Bất thường", "故障": "Lỗi",
+    "检修": "Bảo dưỡng", "保养": "Bảo dưỡng", "重置": "Đặt lại",
+    "恢复出厂": "Khôi phục máy", "重启": "Khởi động lại", "关机": "Tắt máy",
+    "同意": "Đồng ý", "拒绝": "Từ chối", "允许": "Cho phép", "禁止": "Cấm",
+    "开启中": "Đang bật", "关闭中": "Đang tắt", "连接中": "Đang kết nối",
+    "已连接": "Đã kết nối", "未连接": "Chưa kết nối", "可用": "Khả dụng",
+    "不可用": "Không khả dụng", "无数据": "Không có dữ liệu", "未知": "Không rõ",
+    "错误": "Lỗi", "操作成功": "Thành công", "操作失败": "Thất bại",
+    "网络错误": "Lỗi mạng", "超时": "Hết thời gian", "重连": "Kết nối lại",
+    "WIFI": "Wi‑Fi", "WiFi": "Wi‑Fi", "GPS": "GPS", "USB": "USB",
+    "SD卡": "Thẻ SD", "存储": "Lưu trữ", "内存": "Bộ nhớ", "清理": "Dọn dẹp",
+    "加速": "Tăng tốc", "省电": "Tiết kiệm pin", "性能": "Hiệu năng",
+    "开发者": "Nhà phát triển", "调试": "Gỡ lỗi", "日志": "Nhật ký",
+    "截图": "Chụp màn hình", "录屏": "Ghi màn hình", "投屏": "Chiếu màn hình",
+    "分屏": "Chia màn hình", "全屏": "Toàn màn hình", "横屏": "Ngang",
+    "竖屏": "Dọc", "旋转": "Xoay", "镜像": "Gương",
+    "前排": "Hàng trước", "后排": "Hàng sau", "主驾": "Ghế lái",
+    "副驾": "Ghế phụ", "左侧": "Bên trái", "右侧": "Bên phải",
+    "内部": "Trong xe", "外部": "Ngoài xe", "车内": "Trong cabin",
+    "车外": "Bên ngoài", "儿童锁": "Khóa trẻ em", "中控锁": "Khóa trung tâm",
+    "尾门": "Cốp điện", "加油口": "Nắp bình", "充电口": "Cổng sạc",
+    "慢充": "Sạc chậm", "快充": "Sạc nhanh", "预约充电": "Hẹn giờ sạc",
+    "充电中": "Đang sạc", "已充满": "Đã đầy", "未充电": "Chưa sạc",
+    "能耗管理": "Quản lý năng lượng", "驾驶习惯": "Thói quen lái",
+    "行程": "Hành trình", "本次": "Chuyến này", "累计": "Tích lũy",
+    "单位": "Đơn vị", "公里": "Km", "英里": "Dặm", "摄氏度": "°C",
+    "华氏度": "°F", "气压": "Áp suất khí", "海拔": "Độ cao",
+    "天气": "Thời tiết", "晴": "Nắng", "雨": "Mưa", "雪": "Tuyết",
+    "雾": "Sương mù", "空气质量": "Chất lượng không khí",
+    "空气净化器": "Máy lọc không khí", "香氛": "Nước hoa xe",
+    "座椅加热": "Sưởi ghế", "座椅通风": "Thông gió ghế",
+    "方向盘加热": "Sưởi vô lăng", "后视镜": "Gương chiếu hậu",
+    "后视镜加热": "Sưởi gương", "自动折叠": "Tự gập",
+    "感应雨刷": "Gạt mưa cảm biến", "自动大灯": "Đèn pha tự động",
+    "迎宾灯": "Đèn chào", "氛围": "Không khí", "颜色": "Màu",
+    "模式": "Chế độ", "场景": "Cảnh", "露营": "Cắm trại",
+    "休息": "Nghỉ ngơi", "宠物": "Thú cưng", "哨兵": "Canh gác",
+    "隐私模式": "Chế độ riêng tư", "勿扰": "Không làm phiền",
+    "勿扰模式": "Chế độ không làm phiền", "夜间": "Ban đêm",
+    "白天": "Ban ngày", "自适应": "Tự thích ứng",
 }
-
-TRANSLATION_CACHE = dict(CUSTOM_GLOSSARY)
-_START_TS = time.time()
-_API_COUNT = 0
-_CONSEC_FAILS = 0
-_STOP = False
-_API_DISABLED = False
 
 CJK_REGEX = re.compile(r'[\u4e00-\u9fff]')
 PLACEHOLDER_REGEX = re.compile(r'(%(\d+\$)?[-#+ 0,(]*\d*\.?\d*[sdfoxegcbh]|\{\d+\}|\\n|\\t)')
 FORMAT_SPECIFIER_REGEX = re.compile(r'%(\d+\$)?[-#+ 0,(]*\d*\.?\d*[sdfoxegcbh]')
+LAYOUT_ATTR_REGEX = re.compile(
+    r'(android:(?:text|hint|title|summary|dialogTitle|positiveButtonText|negativeButtonText)=")([^"@][^"]*?)(")'
+)
+SMALI_CONST_STRING_REGEX = re.compile(r'^(\s*const-string(?:/jumbo)?\s+[vp]\d+,\s*")(.+)("\s*)$')
+UNICODE_ESCAPE_REGEX = re.compile(r'\\u([0-9a-fA-F]{4})')
+DANGEROUS = (
+    'SharedPreferences', 'JSONObject', 'JSONArray', 'Intent;-><init>',
+    'Intent;->putExtra', 'Intent;->get', 'Bundle;->put', 'Bundle;->get',
+    'Class;->forName', 'Class;->getDeclared', 'Enum;->valueOf',
+    'SQLiteDatabase', 'MessageDigest', 'Cipher', 'System;->loadLibrary',
+)
 
-def timed_out():
-    return (time.time() - _START_TS) >= MAX_TRANSLATE_SECONDS
+CACHE = {}
+STATS = {"hit": 0, "miss": 0, "glossary": 0}
+
 
 def has_chinese(text):
     return bool(text and CJK_REGEX.search(text))
 
-def extract_format_specifiers(text):
-    return [m.group(0) for m in FORMAT_SPECIFIER_REGEX.finditer(text)]
-
-def validate_format_specifiers(original, translated):
-    return sorted(extract_format_specifiers(original)) == sorted(extract_format_specifiers(translated))
-
-def protect_placeholders(text):
-    placeholders = []
-    def replacer(match):
-        placeholders.append(match.group(0))
-        return f"__PH{len(placeholders)-1}__"
-    return PLACEHOLDER_REGEX.sub(replacer, text), placeholders
-
-def restore_placeholders(text, placeholders):
-    for i, ph in enumerate(placeholders):
-        text = re.sub(rf'__\s*PH\s*{i}\s*__', lambda _: ph, text, flags=re.IGNORECASE)
-    return text
 
 def should_skip_string(text):
     if not text or not text.strip():
@@ -99,101 +137,52 @@ def should_skip_string(text):
         return True
     return False
 
-def gtx_translate(text, sl='zh-CN', tl='vi'):
-    """Unofficial Google Translate endpoint — works better on CI than deep-translator."""
-    q = urllib.parse.urlencode({
-        'client': 'gtx',
-        'sl': sl,
-        'tl': tl,
-        'dt': 't',
-        'q': text,
-    })
-    url = 'https://translate.googleapis.com/translate_a/single?' + q
-    req = urllib.request.Request(url, headers={
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-        'Accept': '*/*',
-    })
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
-    parts = []
-    if data and data[0]:
-        for seg in data[0]:
-            if seg and seg[0]:
-                parts.append(seg[0])
-    return ''.join(parts).strip()
 
-def translate_single(text, force_cjk_only=True):
-    global _API_COUNT, _STOP, _CONSEC_FAILS, _API_DISABLED
-    if _STOP or timed_out():
-        _STOP = True
-        return text
-    if should_skip_string(text):
-        return text
-    if force_cjk_only and not has_chinese(text):
-        return text
-
-    clean_text = text.strip()
-    if clean_text in TRANSLATION_CACHE:
-        cached = TRANSLATION_CACHE[clean_text]
-        if validate_format_specifiers(clean_text, cached):
-            return text.replace(clean_text, cached) if clean_text != text else cached
-        return text
-
-    if _API_DISABLED or _API_COUNT >= MAX_STRINGS:
-        TRANSLATION_CACHE[clean_text] = clean_text
-        return text
-
-    protected, phs = protect_placeholders(clean_text)
-    # GTX limit ~ short strings; split if needed
-    if len(protected) > 450:
-        TRANSLATION_CACHE[clean_text] = clean_text
-        return text
-
-    for attempt in range(3):
-        if timed_out():
-            _STOP = True
-            return text
+def load_cache(path):
+    global CACHE
+    CACHE = dict(GLOSSARY)
+    if path and os.path.isfile(path):
         try:
-            translated = gtx_translate(protected)
-            _API_COUNT += 1
-            _CONSEC_FAILS = 0
-            if translated:
-                restored = restore_placeholders(translated, phs)
-                if validate_format_specifiers(clean_text, restored):
-                    TRANSLATION_CACHE[clean_text] = restored
-                    time.sleep(SLEEP_OK)
-                    if _API_COUNT % BATCH_PRINT_EVERY == 0:
-                        print(f"  ... API {_API_COUNT}, cache={len(TRANSLATION_CACHE)}, fails={_CONSEC_FAILS}")
-                    return restored
-                TRANSLATION_CACHE[clean_text] = clean_text
-                return text
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                CACHE.update({str(k): str(v) for k, v in data.items()})
+                print(f"Đã nạp cache: {len(data)} mục từ {path}")
         except Exception as e:
-            _CONSEC_FAILS += 1
-            msg = str(e)[:100]
-            print(f"  [api-fail #{_CONSEC_FAILS}] {msg}")
-            time.sleep(SLEEP_ERR * (attempt + 1))
-            if _CONSEC_FAILS >= MAX_CONSECUTIVE_FAILS:
-                _API_DISABLED = True
-                print(f"[!] Tắt API sau {_CONSEC_FAILS} lỗi liên tiếp — chỉ dùng glossary/cache.")
-                break
+            print(f"[!] Không đọc được cache: {e}")
+    print(f"Tổng từ điển+cache: {len(CACHE)}")
 
-    TRANSLATION_CACHE[clean_text] = clean_text
+
+def save_cache(path):
+    # Chỉ lưu phần không nằm trong glossary gốc (user/extended)
+    extra = {k: v for k, v in CACHE.items() if k not in GLOSSARY and has_chinese(k)}
+    try:
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(extra, f, ensure_ascii=False, indent=1, sort_keys=True)
+        print(f"Đã ghi cache mở rộng: {len(extra)} mục -> {path}")
+    except Exception as e:
+        print(f"[!] Không ghi cache: {e}")
+
+
+def translate_text(text):
+    """Offline lookup only. Giữ nguyên nếu không có trong từ điển/cache."""
+    if should_skip_string(text) or not has_chinese(text):
+        return text
+    clean = text.strip()
+    if clean in CACHE:
+        STATS["hit"] += 1
+        if clean in GLOSSARY:
+            STATS["glossary"] += 1
+        cached = CACHE[clean]
+        return text.replace(clean, cached) if clean != text else cached
+    # Thử exact substring dài (câu chứa đúng 1 key)
+    if clean in GLOSSARY:
+        STATS["glossary"] += 1
+        return GLOSSARY[clean]
+    STATS["miss"] += 1
     return text
 
-def batch_warm_cache(unique_strings):
-    global _STOP
-    to_translate = [s for s in unique_strings
-                    if s not in TRANSLATION_CACHE and not should_skip_string(s) and has_chinese(s)]
-    if not to_translate:
-        return
-    print(f"Dịch {len(to_translate)} chuỗi CJK (max={MAX_STRINGS}, timeout={MAX_TRANSLATE_SECONDS}s, gtx)...")
-    for i, text in enumerate(to_translate):
-        if _STOP or timed_out() or _API_DISABLED:
-            print(f"[!] Dừng warm-cache tại {i}/{len(to_translate)}")
-            break
-        translate_single(text, force_cjk_only=True)
-        if (i + 1) % BATCH_PRINT_EVERY == 0:
-            print(f"  warm-cache: {i+1}/{len(to_translate)} ({int(time.time()-_START_TS)}s)")
 
 def fix_manifest_anti_crash(decompiled_dir, strip_shared_uid=False):
     path = os.path.join(decompiled_dir, "AndroidManifest.xml")
@@ -215,6 +204,7 @@ def fix_manifest_anti_crash(decompiled_dir, strip_shared_uid=False):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
+
 def fix_apktool_yml(decompiled_dir):
     path = os.path.join(decompiled_dir, "apktool.yml")
     if not os.path.exists(path):
@@ -226,90 +216,72 @@ def fix_apktool_yml(decompiled_dir):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def process_values_xml(input_path, output_path, only_chinese=True):
+
+def process_values_xml(input_path, output_path):
     if not os.path.exists(input_path):
         return
-    print(f"Values: {input_path} -> {output_path}")
+    print(f"Values: {input_path}")
     try:
         tree = ET.parse(input_path)
     except Exception as e:
-        print(f"  [skip] XML: {e}")
+        print(f"  [skip] {e}")
         return
     root = tree.getroot()
-    warm = set()
+    n = 0
     for elem in root.iter():
         tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
         if tag in ('string', 'item') and elem.text and has_chinese(elem.text):
-            warm.add(elem.text)
-    batch_warm_cache(warm)
-    for elem in root.iter():
-        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
-        if tag in ('string', 'item') and elem.text:
-            if only_chinese and not has_chinese(elem.text):
-                continue
-            elem.text = translate_single(elem.text, force_cjk_only=only_chinese)
+            new = translate_text(elem.text)
+            if new != elem.text:
+                elem.text = new
+                n += 1
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     tree.write(output_path, encoding='utf-8', xml_declaration=True)
+    print(f"  -> đổi {n} chuỗi")
 
-LAYOUT_ATTR_REGEX = re.compile(
-    r'(android:(?:text|hint|title|summary|dialogTitle|positiveButtonText|negativeButtonText)=")([^"@][^"]*?)(")'
-)
 
 def process_layout_files(base_res_dir):
     xml_files = glob.glob(os.path.join(base_res_dir, "layout*/*.xml")) + \
                 glob.glob(os.path.join(base_res_dir, "xml*/*.xml"))
-    unique, matched = set(), []
+    changed_files = 0
     for fpath in xml_files:
         try:
             with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
         except Exception:
             continue
-        cjk = [m[1] for m in LAYOUT_ATTR_REGEX.findall(content) if has_chinese(m[1])]
-        if cjk:
-            unique.update(cjk)
-            matched.append(fpath)
-    print(f"Layout: {len(matched)} files, {len(unique)} CJK")
-    batch_warm_cache(unique)
-    for fpath in matched:
-        if _STOP or timed_out():
-            break
-        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        if not has_chinese(content):
+            continue
+
         def replacer(match):
             prefix, val, suffix = match.groups()
             if has_chinese(val):
-                t = translate_single(val, force_cjk_only=True)
+                t = translate_text(val)
                 t = t.replace('"', '&quot;').replace("'", '&apos;').replace('<', '&lt;').replace('>', '&gt;')
                 return f"{prefix}{t}{suffix}"
             return match.group(0)
-        with open(fpath, 'w', encoding='utf-8') as f:
-            f.write(LAYOUT_ATTR_REGEX.sub(replacer, content))
 
-SMALI_CONST_STRING_REGEX = re.compile(r'^(\s*const-string(?:/jumbo)?\s+[vp]\d+,\s*")(.+)("\s*)$')
-UNICODE_ESCAPE_REGEX = re.compile(r'\\u([0-9a-fA-F]{4})')
-DANGEROUS = (
-    'SharedPreferences', 'JSONObject', 'JSONArray', 'Intent;-><init>',
-    'Intent;->putExtra', 'Intent;->get', 'Bundle;->put', 'Bundle;->get',
-    'Class;->forName', 'Class;->getDeclared', 'Enum;->valueOf',
-    'SQLiteDatabase', 'MessageDigest', 'Cipher', 'System;->loadLibrary',
-)
+        new_content = LAYOUT_ATTR_REGEX.sub(replacer, content)
+        if new_content != content:
+            with open(fpath, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            changed_files += 1
+    print(f"Layout/XML: chỉnh {changed_files} file")
+
 
 def decode_smali_unicode(s):
     return UNICODE_ESCAPE_REGEX.sub(lambda m: chr(int(m.group(1), 16)), s)
 
+
 def escape_for_smali(s):
     return s.replace('\\"', '"').replace('"', '\\"').replace('\n', '\\n').replace('\r', '')
 
-def is_safe_smali_ui_string(s):
-    return has_chinese(s) and len(s) <= 80 and not should_skip_string(s)
 
 def process_smali_files(decompiled_dir):
     smali_dirs = glob.glob(os.path.join(decompiled_dir, "smali*"))
     if not smali_dirs:
         return
-    print("Quét smali...")
-    unique, targets = set(), []
+    changed = 0
     for sd in smali_dirs:
         for root, _, files in os.walk(sd):
             for name in files:
@@ -321,76 +293,66 @@ def process_smali_files(decompiled_dir):
                         lines = f.readlines()
                 except Exception:
                     continue
-                found = False
+                out, mod = [], False
                 for idx, line in enumerate(lines):
                     m = SMALI_CONST_STRING_REGEX.match(line)
-                    if not m:
-                        continue
-                    decoded = decode_smali_unicode(m.group(2))
-                    if not is_safe_smali_ui_string(decoded):
-                        continue
-                    ctx = "".join(lines[idx+1:idx+5])
-                    if any(d in ctx for d in DANGEROUS):
-                        continue
-                    unique.add(decoded)
-                    found = True
-                if found:
-                    targets.append(sf)
-                    if len(targets) >= 400:
-                        break
-            if len(targets) >= 400:
-                break
-    print(f"Smali: {len(targets)} files, {len(unique)} candidates")
-    batch_warm_cache(unique)
-    for sf in targets:
-        if _STOP or timed_out() or _API_DISABLED:
-            break
-        with open(sf, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-        out = []
-        for idx, line in enumerate(lines):
-            m = SMALI_CONST_STRING_REGEX.match(line)
-            if m:
-                prefix, raw, suffix = m.groups()
-                decoded = decode_smali_unicode(raw)
-                if is_safe_smali_ui_string(decoded):
-                    ctx = "".join(lines[idx+1:idx+5])
-                    if not any(d in ctx for d in DANGEROUS):
-                        line = f"{prefix}{escape_for_smali(translate_single(decoded, True))}{suffix}\n"
-            out.append(line)
-        with open(sf, 'w', encoding='utf-8') as f:
-            f.writelines(out)
+                    if m:
+                        prefix, raw, suffix = m.groups()
+                        decoded = decode_smali_unicode(raw)
+                        if has_chinese(decoded) and len(decoded) <= 80 and not should_skip_string(decoded):
+                            ctx = "".join(lines[idx+1:idx+5])
+                            if not any(d in ctx for d in DANGEROUS):
+                                tr = translate_text(decoded)
+                                if tr != decoded:
+                                    line = f"{prefix}{escape_for_smali(tr)}{suffix}\n"
+                                    mod = True
+                    out.append(line)
+                if mod:
+                    with open(sf, 'w', encoding='utf-8') as f:
+                        f.writelines(out)
+                    changed += 1
+    print(f"Smali: chỉnh {changed} file")
+
+
+def export_misses(decompiled_dir, out_path):
+    """Quét chuỗi CJK chưa có trong cache — để bổ sung từ điển sau."""
+    misses = set()
+    base_res = os.path.join(decompiled_dir, "res")
+    for xml_name in ["strings.xml", "arrays.xml", "plurals.xml"]:
+        for folder in ["values", "values-zh", "values-zh-rCN", "values-zh-rTW"]:
+            path = os.path.join(base_res, folder, xml_name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                tree = ET.parse(path)
+            except Exception:
+                continue
+            for elem in tree.getroot().iter():
+                tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                if tag in ('string', 'item') and elem.text and has_chinese(elem.text):
+                    c = elem.text.strip()
+                    if c not in CACHE and not should_skip_string(c):
+                        misses.add(c)
+    data = {m: "" for m in sorted(misses, key=len)}
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    print(f"Chuỗi chưa dịch (miss): {len(data)} -> {out_path}")
+
 
 if __name__ == "__main__":
+    t0 = time.time()
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default="decompiled_apk")
     parser.add_argument("--strip-shared-uid", action="store_true")
     parser.add_argument("--skip-smali", action="store_true")
-    parser.add_argument("--max-strings", type=int, default=3000)
-    parser.add_argument("--timeout-min", type=int, default=25)
+    parser.add_argument("--cache", default=CACHE_PATH_DEFAULT)
     args = parser.parse_args()
 
-    g = globals()
-    g["MAX_STRINGS"] = args.max_strings
-    g["MAX_TRANSLATE_SECONDS"] = args.timeout_min * 60
-    g["_START_TS"] = time.time()
-    g["_API_COUNT"] = 0
-    g["_CONSEC_FAILS"] = 0
-    g["_STOP"] = False
-    g["_API_DISABLED"] = False
+    print("=== Deep Viet Hoa OFFLINE (glossary + cache) ===")
+    load_cache(args.cache)
 
     ddir = args.dir
     base_res = os.path.join(ddir, "res")
-    print(f"=== Deep Viet Hoa GTX | max={args.max_strings} timeout={args.timeout_min}m skip_smali={args.skip_smali} ===")
-    # smoke test API
-    try:
-        t = gtx_translate("设置")
-        print(f"API smoke OK: 设置 -> {t}")
-    except Exception as e:
-        print(f"API smoke FAIL: {e}")
-        print("Sẽ chỉ dùng glossary offline.")
-        g["_API_DISABLED"] = True
-
     fix_manifest_anti_crash(ddir, strip_shared_uid=args.strip_shared_uid)
     fix_apktool_yml(ddir)
 
@@ -398,14 +360,14 @@ if __name__ == "__main__":
         default_file = os.path.join(base_res, f"values/{xml_name}")
         vi_file = os.path.join(base_res, f"values-vi/{xml_name}")
         if os.path.exists(default_file):
-            process_values_xml(default_file, vi_file, only_chinese=True)
-            process_values_xml(default_file, default_file, only_chinese=True)
+            process_values_xml(default_file, vi_file)
+            process_values_xml(default_file, default_file)
         for zh_dir in ["values-zh", "values-zh-rCN", "values-zh-rTW", "values-zh-rHK"]:
             zh_file = os.path.join(base_res, f"{zh_dir}/{xml_name}")
             if os.path.exists(zh_file):
-                process_values_xml(zh_file, zh_file, only_chinese=True)
+                process_values_xml(zh_file, zh_file)
                 if not os.path.exists(vi_file):
-                    process_values_xml(zh_file, vi_file, only_chinese=True)
+                    process_values_xml(zh_file, vi_file)
 
     if os.path.exists(base_res):
         process_layout_files(base_res)
@@ -415,4 +377,9 @@ if __name__ == "__main__":
     else:
         print("Skip smali.")
 
-    print(f"=== DONE | API={_API_COUNT} cache={len(TRANSLATION_CACHE)} t={int(time.time()-_START_TS)}s stop={_STOP} api_off={_API_DISABLED} ===")
+    miss_path = os.path.join("output", "untranslated_zh.json")
+    os.makedirs("output", exist_ok=True)
+    export_misses(ddir, miss_path)
+    save_cache(args.cache)
+
+    print(f"=== DONE | hit={STATS['hit']} glossary={STATS['glossary']} miss={STATS['miss']} t={int(time.time()-t0)}s ===")
