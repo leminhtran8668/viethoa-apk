@@ -166,16 +166,14 @@ def save_cache(path):
 
 
 def escape_android_string(s):
-    """Escape ký tự phá Android strings.xml / aapt."""
+    """Escape ký tự phá Android strings.xml / aapt (an toàn với ElementTree)."""
     if s is None:
         return s
     s = s.replace('&', '&amp;')
     s = s.replace('<', '&lt;')
     s = s.replace('>', '&gt;')
-    # Apostrophe & quote trong resource string
-    s = s.replace("\\'", "'")  # normalize
-    s = s.replace("'", "\\'")
-    s = s.replace('"', '\\"')
+    s = s.replace("'", "&apos;")
+    s = s.replace('"', "&quot;")
     return s
 
 
