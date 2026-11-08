@@ -200,19 +200,21 @@ def fix_manifest_anti_crash(decompiled_dir, strip_shared_uid=False):
     path = os.path.join(decompiled_dir, "AndroidManifest.xml")
     if not os.path.exists(path):
         return
-    print("Tối ưu AndroidManifest.xml...")
+    print("Tối ưu AndroidManifest.xml chống crash...")
     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
     content = content.replace('android:extractNativeLibs="false"', 'android:extractNativeLibs="true"')
+    if 'android:largeHeap=' not in content:
+        content = re.sub(r'<application\b', '<application android:largeHeap="true"', content, count=1)
     for pat in [r'\s*android:isSplitRequired="true"', r'\s*android:requiredSplitTypes="[^"]*"',
                 r'\s*android:splitTypes="[^"]*"']:
         content = re.sub(pat, '', content)
     content = re.sub(
         r'<meta-data[^>]+android:name="(?:com\.android\.vending\.splits|com\.android\.vending\.derived\.apk\.id|com\.android\.stamp\.source|com\.android\.stamp\.type)"[^>]*/?>',
         '', content, flags=re.IGNORECASE)
-    if strip_shared_uid:
-        content = re.sub(r'\s*android:sharedUserId="[^"]*"', '', content)
-        content = re.sub(r'\s*android:sharedUserLabel="[^"]*"', '', content)
+    content = re.sub(r'\s*android:sharedUserId="[^"]*"', '', content)
+    content = re.sub(r'\s*android:sharedUserLabel="[^"]*"', '', content)
+    print("  - extractNativeLibs=true, largeHeap, gỡ sharedUserId")
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
@@ -380,8 +382,7 @@ if __name__ == "__main__":
                 if not os.path.exists(vi_file):
                     process_values_xml(zh_file, vi_file)
 
-    if os.path.exists(base_res):
-        process_layout_files(base_res)
+    print("Skip layout hardcoded strings.")
 
     if not args.skip_smali:
         process_smali_files(ddir)
