@@ -146,7 +146,7 @@ def load_cache(path):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                CACHE.update({str(k): str(v) for k, v in data.items()})
+                CACHE.update({str(k): str(v) for k, v in data.items() if v})
                 print(f"Đã nạp cache: {len(data)} mục từ {path}")
         except Exception as e:
             print(f"[!] Không đọc được cache: {e}")
@@ -163,6 +163,20 @@ def save_cache(path):
         print(f"Đã ghi cache mở rộng: {len(extra)} mục -> {path}")
     except Exception as e:
         print(f"[!] Không ghi cache: {e}")
+
+
+def escape_android_string(s):
+    """Escape ký tự phá Android strings.xml / aapt."""
+    if s is None:
+        return s
+    s = s.replace('&', '&amp;')
+    s = s.replace('<', '&lt;')
+    s = s.replace('>', '&gt;')
+    # Apostrophe & quote trong resource string
+    s = s.replace("\\'", "'")  # normalize
+    s = s.replace("'", "\\'")
+    s = s.replace('"', '\\"')
+    return s
 
 
 def translate_text(text):
@@ -233,7 +247,7 @@ def process_values_xml(input_path, output_path):
         if tag in ('string', 'item') and elem.text and has_chinese(elem.text):
             new = translate_text(elem.text)
             if new != elem.text:
-                elem.text = new
+                elem.text = escape_android_string(new)
                 n += 1
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     tree.write(output_path, encoding='utf-8', xml_declaration=True)
@@ -256,8 +270,7 @@ def process_layout_files(base_res_dir):
         def replacer(match):
             prefix, val, suffix = match.groups()
             if has_chinese(val):
-                t = translate_text(val)
-                t = t.replace('"', '&quot;').replace("'", '&apos;').replace('<', '&lt;').replace('>', '&gt;')
+                t = escape_android_string(translate_text(val))
                 return f"{prefix}{t}{suffix}"
             return match.group(0)
 
