@@ -11,9 +11,9 @@ on:
         required: false
         default: ''
       strip_shared_uid:
-        description: 'Gỡ sharedUserId'
+        description: 'Gỡ sharedUserId (NÊN bật — tránh crash khi ký lại APK)'
         required: false
-        default: false
+        default: true
         type: boolean
       skip_smali:
         description: 'Bỏ qua smali (nhanh hơn)'
@@ -75,9 +75,8 @@ jobs:
           if [ -z "$SKIP_SMALI" ] || [ "$SKIP_SMALI" = "true" ]; then
             EXTRA_ARGS="$EXTRA_ARGS --skip-smali"
           fi
-          if [ "${{ github.event.inputs.strip_shared_uid }}" = "true" ]; then
-            EXTRA_ARGS="$EXTRA_ARGS --strip-shared-uid"
-          fi
+          # Luôn strip sharedUserId cho bản ký lại
+          EXTRA_ARGS="$EXTRA_ARGS --strip-shared-uid"
 
           echo "Args: $EXTRA_ARGS"
           python3 scripts/deep_translate.py --dir decompiled_apk $EXTRA_ARGS
